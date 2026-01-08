@@ -4,4 +4,4 @@ Python pipeline that ingests ENTSO-E electricity generation by production type i
 - Upserts data to handle revisions without duplication
 - Credentials are managed via GitHub Secrets (no secrets in this repo)
 
-This repository contains ingestion logic only. The database is private and optimised for time-series queries; please avoid heavy or unaggregated full-history scans.
+This repository contains ingestion logic only. Database credentials and API keys are managed via GitHub Secrets and are not included.
