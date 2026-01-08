@@ -37,5 +37,9 @@ jobs:
           PG_USER: ${{ secrets.PG_USER }}
           PG_PASS: ${{ secrets.PG_PASS }}
           PG_SSLMODE: ${{ secrets.PG_SSLMODE }}
+
+          # control load / scope
+          ROLLING_WINDOW_HOURS: "48"
+          SLEEP_BETWEEN_ZONES_SEC: "1"
         run: |
           python import_generation_recent_entsoepy.py
