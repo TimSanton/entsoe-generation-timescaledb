@@ -4,9 +4,11 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+import time
 import datetime as dt
 import traceback
 import pandas as pd
+import requests
 from entsoe import EntsoePandasClient
 import psycopg2
 from psycopg2.extras import execute_values
@@ -24,6 +26,12 @@ PG_PASS    = os.getenv("PG_PASS")
 PG_SSLMODE = os.getenv("PG_SSLMODE", "require")
 
 DEFAULT_FUEL_DETAIL = "Unknown"
+
+# How far back each scheduled run re-pulls (overlap helps with revisions / missed runs)
+ROLLING_WINDOW_HOURS = int(os.getenv("ROLLING_WINDOW_HOURS", "48"))
+
+# Small pause between zones to avoid hammering ENTSO-E / DB
+SLEEP_BETWEEN_ZONES_SEC = float(os.getenv("SLEEP_BETWEEN_ZONES_SEC", "1.0"))
 
 ZONES = [
     # Core Europe
@@ -78,49 +86,45 @@ ZONES = [
     ("RS", "RS"),
     ("BA", "BA"),
     ("ME", "ME"),
-    ("AL", "AL"),
-    ("MK", "MK"),
 ]
+
+# ------------- CLIENT ----------------
+
+_client = None
+
+def get_client():
+    global _client
+    if _client is not None:
+        return _client
+    if not ENTSOE_API_TOKEN:
+        raise RuntimeError("ENTSOE_API_TOKEN is not set")
+    _client = EntsoePandasClient(api_key=ENTSOE_API_TOKEN)
+    return _client
 
 # ------------- HELPERS ----------------
 
-def get_client():
-    if not ENTSOE_API_TOKEN:
-        raise RuntimeError("ENTSOE_API_TOKEN is not set")
-    return EntsoePandasClient(api_key=ENTSOE_API_TOKEN)
-
-
 def normalize_fuel_detail(x) -> str:
-    """
-    Ensure fuel_detail is NEVER NULL/None and never an empty string.
-    """
     if x is None:
         return DEFAULT_FUEL_DETAIL
     s = str(x).strip()
     return s if s else DEFAULT_FUEL_DETAIL
 
-
 def normalize_fuel_type(x) -> str:
-    """
-    fuel_type should also never be None/empty (defensive).
-    """
     if x is None:
         return "UnknownFuel"
     s = str(x).strip()
     return s if s else "UnknownFuel"
 
+# ------------- FETCH ----------------
 
-def fetch_generation_df(country_code: str,
-                        bidding_zone: str,
-                        start_utc: dt.datetime,
-                        end_utc: dt.datetime) -> pd.DataFrame:
+def fetch_generation_df(country_code: str, bidding_zone: str,
+                        start_utc: dt.datetime, end_utc: dt.datetime) -> pd.DataFrame:
     print(f"[INFO] Fetching generation for {country_code} ({bidding_zone}) "
           f"from {start_utc} → {end_utc}")
 
     client = get_client()
 
-    # ENTSO-E expects local market time for the zone.
-    # You were using Europe/Berlin for everything; keep it consistent unless you want per-zone TZ logic.
+    # Keep consistent TZ conversion (you can later make this per-zone if you want)
     start = pd.Timestamp(start_utc).tz_convert("Europe/Berlin")
     end   = pd.Timestamp(end_utc).tz_convert("Europe/Berlin")
 
@@ -133,12 +137,9 @@ def fetch_generation_df(country_code: str,
     print(f"[INFO] Raw DataFrame shape for {bidding_zone}: {df.shape}")
     return df
 
+# ------------- TRANSFORM ----------------
 
 def df_to_records(df: pd.DataFrame, bidding_zone: str):
-    """
-    Convert entsoe-py wide DataFrame into records:
-        (time_utc, bidding_zone, fuel_type, fuel_detail, value_mw, source)
-    """
     print(f"[INFO] Converting DataFrame to records for {bidding_zone}...")
 
     if df is None or df.empty:
@@ -147,7 +148,6 @@ def df_to_records(df: pd.DataFrame, bidding_zone: str):
 
     df = df.copy()
 
-    # Ensure index is tz-aware UTC
     if df.index.tz is None:
         df.index = df.index.tz_localize("Europe/Berlin").tz_convert("UTC")
     else:
@@ -158,9 +158,6 @@ def df_to_records(df: pd.DataFrame, bidding_zone: str):
 
     records = []
     for ts, row in df.iterrows():
-        # Optional: if you want hour-aligned timestamps always:
-        # ts = ts.floor("h")
-
         for psr in cols:
             val = row[psr]
             if pd.isna(val):
@@ -171,25 +168,23 @@ def df_to_records(df: pd.DataFrame, bidding_zone: str):
                 fuel_detail_raw = psr[1] if len(psr) >= 2 else None
             else:
                 fuel_type_raw   = psr
-                fuel_detail_raw = DEFAULT_FUEL_DETAIL  # IMPORTANT: not None
-
-            fuel_type = normalize_fuel_type(fuel_type_raw)
-            fuel_detail = normalize_fuel_detail(fuel_detail_raw)
+                fuel_detail_raw = DEFAULT_FUEL_DETAIL
 
             records.append(
                 (
-                    ts.to_pydatetime(),   # time_utc (tz-aware)
-                    bidding_zone,         # bidding_zone
-                    fuel_type,            # fuel_type (non-null)
-                    fuel_detail,          # fuel_detail (non-null)
-                    float(val),           # value_mw
-                    SOURCE_NAME,          # source
+                    ts.to_pydatetime(),
+                    bidding_zone,
+                    normalize_fuel_type(fuel_type_raw),
+                    normalize_fuel_detail(fuel_detail_raw),
+                    float(val),
+                    SOURCE_NAME,
                 )
             )
 
     print(f"[INFO] Converted {len(records)} records for {bidding_zone}.")
     return records
 
+# ------------- UPSERT ----------------
 
 def upsert_generation(records):
     if not records:
@@ -224,25 +219,42 @@ def upsert_generation(records):
     finally:
         conn.close()
 
+# ------------- MAIN ----------------
 
 def main():
     print("=== ENTSO-E → Timescale import starting ===")
 
-    now_utc = dt.datetime.utcnow().replace(
-        minute=0, second=0, microsecond=0, tzinfo=dt.timezone.utc
-    )
-    start_utc = now_utc - dt.timedelta(days=30)
+    now_utc = dt.datetime.utcnow().replace(minute=0, second=0, microsecond=0, tzinfo=dt.timezone.utc)
+    start_utc = now_utc - dt.timedelta(hours=ROLLING_WINDOW_HOURS)
 
     print(f"[INFO] Import window: {start_utc} → {now_utc}")
+    print(f"[INFO] Zones: {len(ZONES)} | Rolling window: {ROLLING_WINDOW_HOURS}h")
+
+    failures = []
 
     for country_code, bidding_zone in ZONES:
         print(f"\n[ZONE] Processing {bidding_zone} ({country_code})")
-        df = fetch_generation_df(country_code, bidding_zone, start_utc, now_utc)
-        records = df_to_records(df, bidding_zone)
-        upsert_generation(records)
+
+        try:
+            df = fetch_generation_df(country_code, bidding_zone, start_utc, now_utc)
+            records = df_to_records(df, bidding_zone)
+            upsert_generation(records)
+        except Exception as e:
+            print(f"[ERROR] Zone failed: {bidding_zone} ({country_code}) -> {e}")
+            traceback.print_exc()
+            failures.append((country_code, bidding_zone, str(e)))
+
+        if SLEEP_BETWEEN_ZONES_SEC > 0:
+            time.sleep(SLEEP_BETWEEN_ZONES_SEC)
+
+    if failures:
+        print("\n[SUMMARY] Some zones failed:")
+        for cc, bz, msg in failures:
+            print(f" - {bz} ({cc}): {msg}")
+        # Fail the workflow so you notice
+        raise RuntimeError(f"{len(failures)} zones failed")
 
     print("=== DONE ===")
-
 
 if __name__ == "__main__":
     try:
@@ -252,5 +264,6 @@ if __name__ == "__main__":
         print(e)
         print("\n[TRACEBACK]")
         traceback.print_exc()
+        raise  # ensure GitHub Actions marks it as failed
 
 print(">>> BOTTOM OF SCRIPT REACHED")
