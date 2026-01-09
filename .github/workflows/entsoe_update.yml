@@ -43,7 +43,7 @@ jobs:
 
           ROLLING_WINDOW_HOURS: "48"
           ROLLING_WINDOW_DAYS: "0"
-          CHUNK_DAYS: "2"
+          CHUNK_DAYS: "0"
 
           SLEEP_BETWEEN_ZONES_SEC: "1"
         run: |
@@ -85,7 +85,7 @@ jobs:
 
           ROLLING_WINDOW_DAYS: "30"
           ROLLING_WINDOW_HOURS: "0"
-          CHUNK_DAYS: "2"
+          CHUNK_DAYS: "0"
 
           SLEEP_BETWEEN_ZONES_SEC: "0.5"
         run: |
