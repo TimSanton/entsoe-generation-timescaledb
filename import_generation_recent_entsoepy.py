@@ -33,7 +33,7 @@ ROLLING_WINDOW_DAYS  = int(os.getenv("ROLLING_WINDOW_DAYS", "0"))
 
 # Chunk large windows to avoid huge ENTSO-E responses / timeouts
 # For a 30-day run, CHUNK_DAYS=1 or 2 is usually best.
-CHUNK_DAYS = int(os.getenv("CHUNK_DAYS", "2"))
+CHUNK_DAYS = int(os.getenv("CHUNK_DAYS", "0"))
 
 # Small pause between zones to avoid hammering ENTSO-E / DB
 SLEEP_BETWEEN_ZONES_SEC = float(os.getenv("SLEEP_BETWEEN_ZONES_SEC", "1.0"))
@@ -290,3 +290,4 @@ if __name__ == "__main__":
         print("\n[TRACEBACK]")
         traceback.print_exc()
         raise  # ensure GitHub Actions marks it as failed
+
