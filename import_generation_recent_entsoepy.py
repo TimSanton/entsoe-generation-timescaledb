@@ -1,4 +1,3 @@
-print(">>> TOP OF SCRIPT REACHED")
 
 import os
 from dotenv import load_dotenv
@@ -8,7 +7,6 @@ import time
 import datetime as dt
 import traceback
 import pandas as pd
-import requests
 from entsoe import EntsoePandasClient
 import psycopg2
 from psycopg2.extras import execute_values
@@ -27,8 +25,15 @@ PG_SSLMODE = os.getenv("PG_SSLMODE", "require")
 
 DEFAULT_FUEL_DETAIL = "Unknown"
 
-# How far back each scheduled run re-pulls (overlap helps with revisions / missed runs)
+# Rolling window:
+# - default: hours
+# - if ROLLING_WINDOW_DAYS > 0, it overrides hours
 ROLLING_WINDOW_HOURS = int(os.getenv("ROLLING_WINDOW_HOURS", "48"))
+ROLLING_WINDOW_DAYS  = int(os.getenv("ROLLING_WINDOW_DAYS", "0"))
+
+# Chunk large windows to avoid huge ENTSO-E responses / timeouts
+# For a 30-day run, CHUNK_DAYS=1 or 2 is usually best.
+CHUNK_DAYS = int(os.getenv("CHUNK_DAYS", "2"))
 
 # Small pause between zones to avoid hammering ENTSO-E / DB
 SLEEP_BETWEEN_ZONES_SEC = float(os.getenv("SLEEP_BETWEEN_ZONES_SEC", "1.0"))
@@ -115,6 +120,20 @@ def normalize_fuel_type(x) -> str:
     s = str(x).strip()
     return s if s else "UnknownFuel"
 
+def iter_chunks(start_utc: dt.datetime, end_utc: dt.datetime, chunk_days: int):
+    """
+    Yield (chunk_start_utc, chunk_end_utc) pairs.
+    """
+    if chunk_days <= 0:
+        yield start_utc, end_utc
+        return
+    cur = start_utc
+    step = dt.timedelta(days=chunk_days)
+    while cur < end_utc:
+        nxt = min(cur + step, end_utc)
+        yield cur, nxt
+        cur = nxt
+
 # ------------- FETCH ----------------
 
 def fetch_generation_df(country_code: str, bidding_zone: str,
@@ -124,7 +143,7 @@ def fetch_generation_df(country_code: str, bidding_zone: str,
 
     client = get_client()
 
-    # Keep consistent TZ conversion (you can later make this per-zone if you want)
+    # Convert UTC -> Europe/Berlin for entsoe-py calls
     start = pd.Timestamp(start_utc).tz_convert("Europe/Berlin")
     end   = pd.Timestamp(end_utc).tz_convert("Europe/Berlin")
 
@@ -134,7 +153,7 @@ def fetch_generation_df(country_code: str, bidding_zone: str,
         end=end,
         psr_type=None,
     )
-    print(f"[INFO] Raw DataFrame shape for {bidding_zone}: {df.shape}")
+    print(f"[INFO] Raw DataFrame shape for {bidding_zone}: {getattr(df, 'shape', None)}")
     return df
 
 # ------------- TRANSFORM ----------------
@@ -225,10 +244,14 @@ def main():
     print("=== ENTSO-E → Timescale import starting ===")
 
     now_utc = dt.datetime.utcnow().replace(minute=0, second=0, microsecond=0, tzinfo=dt.timezone.utc)
-    start_utc = now_utc - dt.timedelta(hours=ROLLING_WINDOW_HOURS)
+
+    if ROLLING_WINDOW_DAYS > 0:
+        start_utc = now_utc - dt.timedelta(days=ROLLING_WINDOW_DAYS)
+    else:
+        start_utc = now_utc - dt.timedelta(hours=ROLLING_WINDOW_HOURS)
 
     print(f"[INFO] Import window: {start_utc} → {now_utc}")
-    print(f"[INFO] Zones: {len(ZONES)} | Rolling window: {ROLLING_WINDOW_HOURS}h")
+    print(f"[INFO] Zones: {len(ZONES)} | Rolling hours: {ROLLING_WINDOW_HOURS} | Rolling days: {ROLLING_WINDOW_DAYS} | Chunk days: {CHUNK_DAYS}")
 
     failures = []
 
@@ -236,9 +259,12 @@ def main():
         print(f"\n[ZONE] Processing {bidding_zone} ({country_code})")
 
         try:
-            df = fetch_generation_df(country_code, bidding_zone, start_utc, now_utc)
-            records = df_to_records(df, bidding_zone)
-            upsert_generation(records)
+            for chunk_start, chunk_end in iter_chunks(start_utc, now_utc, CHUNK_DAYS):
+                print(f"[INFO] Chunk window: {chunk_start} → {chunk_end}")
+                df = fetch_generation_df(country_code, bidding_zone, chunk_start, chunk_end)
+                records = df_to_records(df, bidding_zone)
+                upsert_generation(records)
+
         except Exception as e:
             print(f"[ERROR] Zone failed: {bidding_zone} ({country_code}) -> {e}")
             traceback.print_exc()
@@ -251,7 +277,6 @@ def main():
         print("\n[SUMMARY] Some zones failed:")
         for cc, bz, msg in failures:
             print(f" - {bz} ({cc}): {msg}")
-        # Fail the workflow so you notice
         raise RuntimeError(f"{len(failures)} zones failed")
 
     print("=== DONE ===")
@@ -265,5 +290,3 @@ if __name__ == "__main__":
         print("\n[TRACEBACK]")
         traceback.print_exc()
         raise  # ensure GitHub Actions marks it as failed
-
-print(">>> BOTTOM OF SCRIPT REACHED")
