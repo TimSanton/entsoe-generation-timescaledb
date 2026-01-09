@@ -3,16 +3,19 @@ name: ENTSO-E update
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "17 * * * *"  # every hour at :17 UTC
-
-concurrency:
-  group: entsoe-update
-  cancel-in-progress: true
+    - cron: "17 * * * *"   # hourly refresher at :17 UTC
+    - cron: "35 3 * * *"   # daily 30d revision run at 03:35 UTC
 
 jobs:
-  run:
+  refresher:
+    # ONLY run on the hourly cron
+    if: github.event_name == 'schedule' && github.event.schedule == '17 * * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    concurrency:
+      group: entsoe-refresher
+      cancel-in-progress: true
 
     steps:
       - name: Checkout
@@ -28,7 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run update script
+      - name: Run update script (refresher)
         env:
           ENTSOE_API_TOKEN: ${{ secrets.ENTSOE_API_TOKEN }}
           PG_HOST: ${{ secrets.PG_HOST }}
@@ -38,8 +41,52 @@ jobs:
           PG_PASS: ${{ secrets.PG_PASS }}
           PG_SSLMODE: ${{ secrets.PG_SSLMODE }}
 
-          # control load / scope
           ROLLING_WINDOW_HOURS: "48"
+          ROLLING_WINDOW_DAYS: "0"
+          CHUNK_DAYS: "2"
+
           SLEEP_BETWEEN_ZONES_SEC: "1"
+        run: |
+          python import_generation_recent_entsoepy.py
+
+  revision_backfill_30d:
+    # Run on the daily cron OR manually (workflow_dispatch)
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '35 3 * * *')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    concurrency:
+      group: entsoe-revision-30d
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run update script (30d revision backfill)
+        env:
+          ENTSOE_API_TOKEN: ${{ secrets.ENTSOE_API_TOKEN }}
+          PG_HOST: ${{ secrets.PG_HOST }}
+          PG_PORT: ${{ secrets.PG_PORT }}
+          PG_DB: ${{ secrets.PG_DB }}
+          PG_USER: ${{ secrets.PG_USER }}
+          PG_PASS: ${{ secrets.PG_PASS }}
+          PG_SSLMODE: ${{ secrets.PG_SSLMODE }}
+
+          ROLLING_WINDOW_DAYS: "30"
+          ROLLING_WINDOW_HOURS: "0"
+          CHUNK_DAYS: "2"
+
+          SLEEP_BETWEEN_ZONES_SEC: "0.5"
         run: |
           python import_generation_recent_entsoepy.py
