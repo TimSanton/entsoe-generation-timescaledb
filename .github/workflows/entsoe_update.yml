@@ -3,12 +3,11 @@ name: ENTSO-E update
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "17 * * * *"   # hourly refresher at :17 UTC
-    - cron: "35 3 * * *"   # daily 30d revision run at 03:35 UTC
+    - cron: "17 * * * *"   # hourly refresher
+    - cron: "35 3 * * *"   # daily 30d backfill
 
 jobs:
   refresher:
-    # ONLY run on the hourly cron
     if: github.event_name == 'schedule' && github.event.schedule == '17 * * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -18,36 +17,41 @@ jobs:
       cancel-in-progress: true
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies (verified)
+      - name: Install dependencies
         shell: bash
         run: |
           set -euxo pipefail
-          python -V
-          python -m pip -V
-
           python -m pip install --upgrade pip
           python -m pip install --no-cache-dir -r requirements.txt
 
-          # Prove tzdata is installed + entsoe imports in THIS interpreter
+      - name: Patch entsoe-py timezone bug
+        shell: bash
+        run: |
           python - <<'PY'
-          import importlib
-          import tzdata
-          import entsoe
-          print("tzdata", tzdata.__version__)
-          print("entsoe", getattr(entsoe, "__version__", "n/a"))
-          importlib.import_module("tzdata.zoneinfo.europe")
-          print("tzdata.zoneinfo.europe import: OK")
-          PY
+          import site, pathlib
 
-          python -m pip freeze | grep -E "tzdata|entsoe|pandas"
+          for sp in site.getsitepackages():
+              p = pathlib.Path(sp) / "entsoe" / "entsoe.py"
+              if p.exists():
+                  txt = p.read_text(encoding="utf-8")
+                  if "europe/amsterdam" in txt:
+                      p.write_text(
+                          txt.replace("europe/amsterdam", "Europe/Amsterdam"),
+                          encoding="utf-8"
+                      )
+                      print("Patched:", p)
+                  else:
+                      print("No patch needed:", p)
+                  break
+          else:
+              raise SystemExit("entsoe/entsoe.py not found")
+          PY
 
       - name: Run update script (refresher)
         env:
@@ -62,13 +66,11 @@ jobs:
           ROLLING_WINDOW_HOURS: "48"
           ROLLING_WINDOW_DAYS: "0"
           CHUNK_DAYS: "0"
-
           SLEEP_BETWEEN_ZONES_SEC: "1"
         run: |
           python import_generation_recent_entsoepy.py
 
   revision_backfill_30d:
-    # Run on the daily cron OR manually (workflow_dispatch)
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '35 3 * * *')
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -78,51 +80,8 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-
-      - name: Install dependencies (verified)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python -V
-          python -m pip -V
-
-          python -m pip install --upgrade pip
-          python -m pip install --no-cache-dir -r requirements.txt
-
-          # Prove tzdata is installed + entsoe imports in THIS interpreter
-          python - <<'PY'
-          import importlib
-          import tzdata
-          import entsoe
-          print("tzdata", tzdata.__version__)
-          print("entsoe", getattr(entsoe, "__version__", "n/a"))
-          importlib.import_module("tzdata.zoneinfo.europe")
-          print("tzdata.zoneinfo.europe import: OK")
-          PY
-
-          python -m pip freeze | grep -E "tzdata|entsoe|pandas"
-
-      - name: Run update script (30d revision backfill)
-        env:
-          ENTSOE_API_TOKEN: ${{ secrets.ENTSOE_API_TOKEN }}
-          PG_HOST: ${{ secrets.PG_HOST }}
-          PG_PORT: ${{ secrets.PG_PORT }}
-          PG_DB: ${{ secrets.PG_DB }}
-          PG_USER: ${{ secrets.PG_USER }}
-          PG_PASS: ${{ secrets.PG_PASS }}
-          PG_SSLMODE: ${{ secrets.PG_SSLMODE }}
-
-          ROLLING_WINDOW_DAYS: "30"
-          ROLLING_WINDOW_HOURS: "0"
-          CHUNK_DAYS: "0"
-
-          SLEEP_BETWEEN_ZONES_SEC: "0.5"
-        run: |
-          python import_generation_recent_entsoepy.py
+          python
