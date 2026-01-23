@@ -71,7 +71,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt tzdata
+          pip install -r requirements.txt
 
       - name: Run update script (30d revision backfill)
         env:
