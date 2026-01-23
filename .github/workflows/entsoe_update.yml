@@ -23,11 +23,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install OS tzdata
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tzdata
+
+      - name: Install Python dependencies
         shell: bash
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir tzdata
           python -m pip install --no-cache-dir -r requirements.txt
 
       - name: Patch entsoe-py timezone bug
@@ -35,18 +41,30 @@ jobs:
         run: |
           python - <<'PY'
           import site, pathlib
+
           for sp in site.getsitepackages():
               p = pathlib.Path(sp) / "entsoe" / "entsoe.py"
               if p.exists():
                   txt = p.read_text(encoding="utf-8")
                   if "europe/amsterdam" in txt:
-                      p.write_text(txt.replace("europe/amsterdam", "Europe/Amsterdam"), encoding="utf-8")
+                      p.write_text(
+                          txt.replace("europe/amsterdam", "Europe/Amsterdam"),
+                          encoding="utf-8"
+                      )
                       print("Patched:", p)
                   else:
                       print("No patch needed:", p)
                   break
           else:
               raise SystemExit("entsoe/entsoe.py not found")
+          PY
+
+      - name: Verify timezone availability
+        run: |
+          python - <<'PY'
+          import zoneinfo
+          z = zoneinfo.ZoneInfo("Europe/Amsterdam")
+          print("ZoneInfo loaded:", z)
           PY
 
       - name: Run update script (refresher)
@@ -82,11 +100,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install OS tzdata
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tzdata
+
+      - name: Install Python dependencies
         shell: bash
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir tzdata
           python -m pip install --no-cache-dir -r requirements.txt
 
       - name: Patch entsoe-py timezone bug
@@ -94,18 +118,30 @@ jobs:
         run: |
           python - <<'PY'
           import site, pathlib
+
           for sp in site.getsitepackages():
               p = pathlib.Path(sp) / "entsoe" / "entsoe.py"
               if p.exists():
                   txt = p.read_text(encoding="utf-8")
                   if "europe/amsterdam" in txt:
-                      p.write_text(txt.replace("europe/amsterdam", "Europe/Amsterdam"), encoding="utf-8")
+                      p.write_text(
+                          txt.replace("europe/amsterdam", "Europe/Amsterdam"),
+                          encoding="utf-8"
+                      )
                       print("Patched:", p)
                   else:
                       print("No patch needed:", p)
                   break
           else:
               raise SystemExit("entsoe/entsoe.py not found")
+          PY
+
+      - name: Verify timezone availability
+        run: |
+          python - <<'PY'
+          import zoneinfo
+          z = zoneinfo.ZoneInfo("Europe/Amsterdam")
+          print("ZoneInfo loaded:", z)
           PY
 
       - name: Run update script (30d backfill)
