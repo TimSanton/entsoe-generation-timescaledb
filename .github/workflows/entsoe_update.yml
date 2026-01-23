@@ -26,10 +26,28 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install dependencies (verified)
+        shell: bash
         run: |
+          set -euxo pipefail
+          python -V
+          python -m pip -V
+
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --no-cache-dir -r requirements.txt
+
+          # Prove tzdata is installed + entsoe imports in THIS interpreter
+          python - <<'PY'
+          import importlib
+          import tzdata
+          import entsoe
+          print("tzdata", tzdata.__version__)
+          print("entsoe", getattr(entsoe, "__version__", "n/a"))
+          importlib.import_module("tzdata.zoneinfo.europe")
+          print("tzdata.zoneinfo.europe import: OK")
+          PY
+
+          python -m pip freeze | grep -E "tzdata|entsoe|pandas"
 
       - name: Run update script (refresher)
         env:
@@ -68,10 +86,28 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install dependencies (verified)
+        shell: bash
         run: |
+          set -euxo pipefail
+          python -V
+          python -m pip -V
+
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --no-cache-dir -r requirements.txt
+
+          # Prove tzdata is installed + entsoe imports in THIS interpreter
+          python - <<'PY'
+          import importlib
+          import tzdata
+          import entsoe
+          print("tzdata", tzdata.__version__)
+          print("entsoe", getattr(entsoe, "__version__", "n/a"))
+          importlib.import_module("tzdata.zoneinfo.europe")
+          print("tzdata.zoneinfo.europe import: OK")
+          PY
+
+          python -m pip freeze | grep -E "tzdata|entsoe|pandas"
 
       - name: Run update script (30d revision backfill)
         env:
