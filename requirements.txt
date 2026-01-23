@@ -3,5 +3,5 @@ pandas
 requests
 psycopg2-binary
 tzdata
-entsoe-py==0.7.8
+entsoe-py
 
