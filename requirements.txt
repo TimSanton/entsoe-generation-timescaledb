@@ -2,5 +2,6 @@ python-dotenv
 pandas
 requests
 psycopg2-binary
-entsoe-py
-tzdata>=2021.5
+tzdata
+entsoe-py==0.7.7
+
