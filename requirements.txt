@@ -3,3 +3,4 @@ pandas
 requests
 psycopg2-binary
 entsoe-py
+tzdata>=2021.5
